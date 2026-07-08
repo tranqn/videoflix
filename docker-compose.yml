@@ -1,0 +1,39 @@
+name: videoflix
+
+# One-command local full stack for Videoflix.
+#
+#   cp backend/.env.template backend/.env   # then fill in DB_*, EMAIL_*, SECRET_KEY, ...
+#   docker compose up --build
+#
+#   Frontend (open this):  http://127.0.0.1:5500
+#   API:                   http://127.0.0.1:8000/api/
+#   Admin:                 http://127.0.0.1:8000/admin/
+#   Background jobs (RQ):  http://127.0.0.1:8000/django-rq/
+#
+# The backend's Developer-Akademie docker-compose.yml is INCLUDED unchanged
+# (Postgres, Redis, Django API + RQ worker). This file only adds a static server
+# for the forked Vanilla-JS frontend, on port 5500 to match the backend's CORS /
+# cookie configuration — so nothing in backend/ or frontend/ has to change.
+#
+# Open the app at http://127.0.0.1:5500 (use 127.0.0.1, NOT localhost): the
+# frontend calls the API at http://127.0.0.1:8000 and the HttpOnly auth cookies
+# are only sent back when both sides use the same host.
+#
+# For production (single origin, automatic HTTPS) use backend/compose.prod.yml.
+# Requires Docker Compose v2.20+ (for `include:`).
+
+include:
+  - path: ./backend/docker-compose.yml
+    env_file: ./backend/.env
+
+services:
+  frontend:
+    image: caddy:2-alpine
+    container_name: videoflix_frontend
+    restart: unless-stopped
+    ports:
+      - "5500:80"                        # open http://127.0.0.1:5500
+    volumes:
+      - ./frontend:/usr/share/caddy:ro   # served by Caddy's default file server
+    depends_on:
+      - web
