@@ -88,14 +88,18 @@ dedicated stack instead:
 cd backend && docker compose -f compose.prod.yml up -d --build
 ```
 
-## Running the tests
+## Running the backend tests
+
+The test suite lives in the **backend** submodule (the frontend is a static
+Vanilla-JS app and ships no tests). With the stack running:
 
 ```bash
 docker compose exec web python manage.py test
 ```
 
 The suite uses in-memory SQLite, a local-memory cache and synchronous jobs, so
-it needs no external services.
+it needs no external services. Details in
+[`backend/README.md`](backend/README.md#running-the-tests).
 
 ## More documentation
 
