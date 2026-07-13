@@ -94,7 +94,7 @@ The test suite lives in the **backend** submodule (the frontend is a static
 Vanilla-JS app and ships no tests). With the stack running:
 
 ```bash
-docker compose exec web python manage.py test
+cd backend && docker compose exec web python manage.py test
 ```
 
 The suite uses in-memory SQLite, a local-memory cache and synchronous jobs, so
