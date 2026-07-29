@@ -63,10 +63,16 @@ jobs:
           set -euo pipefail
           test -n "$IMAGE" || { echo "::error::image is empty"; exit 1; }
           test -n "$SHA"   || { echo "::error::sha is empty"; exit 1; }
+          # Pin the full registry path, not just the host. The payload is
+          # attacker-chosen if the dispatch token ever leaks, and the server
+          # runs whatever it is handed as a user in the docker group — which is
+          # root-equivalent. `ghcr.io/*` would have happily accepted
+          # ghcr.io/someone-else/malware:<a-real-backend-sha>. deploy.sh enforces
+          # the same rule again on the box; this is the outer of the two.
           case "$IMAGE" in
             *:latest) echo "::error::refusing to deploy :latest — deployments must name the immutable SHA tag"; exit 1 ;;
-            ghcr.io/*:*) : ;;
-            *) echo "::error::unexpected image reference: $IMAGE"; exit 1 ;;
+            ghcr.io/tranqn/videoflix-backend:?*) : ;;
+            *) echo "::error::refusing '$IMAGE': only ghcr.io/tranqn/videoflix-backend:<tag> may be deployed"; exit 1 ;;
           esac
           # The tag and the commit must describe the same thing, or a rollback
           # would restore code that never produced this image.
