@@ -12,7 +12,7 @@ run the whole stack locally with one command.
 
 | Path        | What it is | Repository (submodule) |
 | ----------- | ---------- | ---------------------- |
-| `backend/`  | Django REST API — auth (JWT in HttpOnly cookies), HLS transcoding, streaming | [`tranqn/videoflix-backend`](https://github.com/tranqn/videoflix-backend) |
+| `backend/`  | Django REST API: auth (JWT in HttpOnly cookies), HLS transcoding, streaming | [`tranqn/videoflix-backend`](https://github.com/tranqn/videoflix-backend) |
 | `frontend/` | Vanilla-JS client | **fork** of the Developer Akademie [`project.Videoflix`](https://github.com/Developer-Akademie-Backendkurs/project.Videoflix), forked to [`tranqn/project.Videoflix`](https://github.com/tranqn/project.Videoflix) |
 
 The frontend is a fork so upstream changes can still be pulled in (`git fetch
@@ -78,30 +78,44 @@ appears in the frontend. Watch progress on the RQ dashboard.
 `docker-compose.yml` in this folder **includes the backend's own
 `backend/docker-compose.yml` unchanged** (Postgres, Redis, Django API and the RQ
 worker) and adds one small service: a Caddy static server that serves
-`frontend/` on port **5500** — the origin the API's CORS and cookie settings
+`frontend/` on port **5500**: the origin the API's CORS and cookie settings
 already expect. So you don't have to run the frontend separately (no Live Server).
 
-For **production** (single origin, automatic HTTPS via Caddy) use the backend's
-dedicated stack instead:
+For **production** (single origin, automatic HTTPS via Caddy) do not run
+`compose.prod.yml` with `--build`: it deliberately has no `build:` key (the
+server only ever pulls the exact image CI built and pushed to GHCR), so
+`--build` there builds nothing and `up` then fails trying to pull a
+`videoflix-backend:prod` image that does not exist locally or in any
+registry. Production deploys go through CI + [`deploy/deploy.sh`], not a
+manual `docker compose up`; see [`backend/docs/DEPLOYMENT.md`] for the full
+flow, and use `compose.build.yml` only to reproduce the prod stack locally:
 
 ```bash
-cd backend && docker compose -f compose.prod.yml up -d --build
+cd backend
+docker compose -f compose.prod.yml -f compose.build.yml build
+WEB_IMAGE=videoflix-backend:prod docker compose -f compose.prod.yml -f compose.build.yml up -d
 ```
+
+[`deploy/deploy.sh`]: backend/deploy/deploy.sh
+[`backend/docs/DEPLOYMENT.md`]: backend/docs/DEPLOYMENT.md
 
 ## Running the backend tests
 
 The test suite lives in the **backend** submodule (the frontend is a static
-Vanilla-JS app and ships no tests). With the stack running:
+Vanilla-JS app and ships no tests). `pytest` is canonical (163 tests);
+`python manage.py test` misses the plain-class pytest tests and is not a
+substitute. From `backend/`, with a local virtualenv set up:
 
 ```bash
-cd backend && docker compose exec web python manage.py test
+cd backend && .venv/bin/pytest
 ```
 
 The suite uses in-memory SQLite, a local-memory cache and synchronous jobs, so
-it needs no external services. Details in
+it needs no external services. Details, including the `ffmpeg`-marked
+end-to-end tests, in
 [`backend/README.md`](backend/README.md#running-the-tests).
 
 ## More documentation
 
-- [`backend/README.md`](backend/README.md) — full API reference, endpoint table and details
-- [`frontend/readme.md`](frontend/readme.md) — frontend notes
+- [`backend/README.md`](backend/README.md): full API reference, endpoint table and details
+- [`frontend/readme.md`](frontend/readme.md): frontend notes
