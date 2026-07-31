@@ -1,0 +1,10 @@
+# The umbrella pins one third-party action (appleboy/ssh-action) that holds the
+# production SSH key while it runs, so it is worth keeping current. The backend
+# repo has its own dependabot config for pip, docker and actions; Dependabot
+# does not follow submodules, so each repo needs its own.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

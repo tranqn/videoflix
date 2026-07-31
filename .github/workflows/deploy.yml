@@ -1,0 +1,153 @@
+# Deploy the production stack.
+#
+# This workflow does NOT build anything and does NOT decide what to deploy. The
+# backend repo's release.yml builds an image, pushes it to GHCR under its full
+# commit SHA, and then dispatches here with that exact reference. This side only
+# puts the named artifact on the server.
+#
+# WHY THE UMBRELLA OWNS DEPLOYMENT
+# --------------------------------
+# The server layout is the umbrella: ~/videoflix/ with backend/ and frontend/ as
+# sibling submodules. compose.prod.yml mounts ../frontend into Caddy, so it only
+# works from that layout. The backend repo has no idea where the frontend lives,
+# which is why the deploy lives here and not there.
+#
+# THE EVENT TYPE IS LOAD-BEARING
+# ------------------------------
+# `backend-release` must match release.yml's event_type EXACTLY. A mismatch is
+# the worst kind of failure: POST /dispatches returns 202, the sender's job goes
+# green, and no workflow ever runs. Nothing anywhere reports an error.
+#
+# SECRETS (repository secrets on tranqn/videoflix)
+#   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY
+# No registry credentials: the GHCR package is public, so the box pulls
+# anonymously and holds no long-lived registry secret.
+
+name: Deploy
+
+on:
+  repository_dispatch:
+    types: [backend-release]
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Full GHCR image ref, e.g. ghcr.io/tranqn/videoflix-backend:<full-sha>'
+        required: true
+      sha:
+        description: 'Backend commit SHA the image was built from (must match the tag)'
+        required: true
+
+# One deploy at a time. Queue rather than cancel: cancelling mid-run could
+# interrupt deploy.sh between "new image up" and "health verified", which is the
+# one window where its own rollback cannot help.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ github.event.client_payload.image || inputs.image }}
+      SHA: ${{ github.event.client_payload.sha || inputs.sha }}
+
+    steps:
+      - name: Validate inputs
+        # A dispatch with a missing payload would otherwise reach the server and
+        # run `deploy.sh ""`, which exits 2 — but only after connecting. Fail here.
+        run: |
+          set -euo pipefail
+          test -n "$IMAGE" || { echo "::error::image is empty"; exit 1; }
+          test -n "$SHA"   || { echo "::error::sha is empty"; exit 1; }
+          # Pin the full registry path, not just the host. The payload is
+          # attacker-chosen if the dispatch token ever leaks, and the server
+          # runs whatever it is handed as a user in the docker group — which is
+          # root-equivalent. `ghcr.io/*` would have happily accepted
+          # ghcr.io/someone-else/malware:<a-real-backend-sha>. deploy.sh enforces
+          # the same rule again on the box; this is the outer of the two.
+          case "$IMAGE" in
+            *:latest) echo "::error::refusing to deploy :latest — deployments must name the immutable SHA tag"; exit 1 ;;
+            ghcr.io/tranqn/videoflix-backend:?*) : ;;
+            *) echo "::error::refusing '$IMAGE': only ghcr.io/tranqn/videoflix-backend:<tag> may be deployed"; exit 1 ;;
+          esac
+          # The tag and the commit must describe the same thing, or a rollback
+          # would restore code that never produced this image.
+          test "${IMAGE##*:}" = "$SHA" || {
+            echo "::error::image tag (${IMAGE##*:}) does not match sha ($SHA)"; exit 1; }
+          echo "Deploying $IMAGE"
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: IMAGE,SHA
+          # Long transcodes can keep the box busy; give migrate + health room.
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            cd ~/videoflix
+
+            # The umbrella itself follows main.
+            git pull --ff-only
+
+            # Frontend tracks its branch: it is a static site with no build step
+            # and no independent release process.
+            git submodule update --init --remote frontend
+
+            # The backend is pinned to the EXACT commit the image was built from,
+            # never --remote. compose.prod.yml, the Caddyfile and the entrypoint
+            # all live in that submodule, so letting it drift to whatever main
+            # happens to be would run the new config against an older image.
+            git submodule update --init backend
+            git -C backend fetch --quiet origin
+            git -C backend checkout --detach --quiet "$SHA"
+
+            # deploy.sh owns preconditions, the health gate and rollback policy.
+            # Capture its exit code rather than letting `set -e` swallow the
+            # distinction: 1 and 3 mean very different things to a human.
+            set +e
+            ~/videoflix/backend/deploy/deploy.sh "$IMAGE"
+            code=$?
+            set -e
+
+            case "$code" in
+              0) echo "::notice title=Deployed::$IMAGE is live and healthy" ;;
+              1) echo "::error title=Deploy failed::Rolled back automatically. The stack is serving the PREVIOUS version." ;;
+              2) echo "::error title=Refused to start::Production config is missing or invalid. Nothing was changed." ;;
+              3) echo "::error title=ROLLBACK REFUSED::The deploy applied migrations and then failed health. The stack was left as-is on purpose, because reverting the image would run older code against a newer schema. A human must act now — see the runbook in the log above." ;;
+              *) echo "::error title=Unknown failure::deploy.sh exited $code" ;;
+            esac
+            exit "$code"
+
+      - name: Smoke-test the public site
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+        # deploy.sh already gated on health from inside the box. This checks the
+        # same thing the way a user meets it: through Caddy, over TLS, from off
+        # the network. It also covers the frontend, which deploy.sh does not --
+        # the frontend submodule tracks its branch, so an untested commit can
+        # ride along with a backend release.
+        run: |
+          set -euo pipefail
+          # Overridable via a repository variable so a domain change is a
+          # settings edit, not a code change. Falls back to the current host.
+          site="${SITE_URL:-https://videoflix.quocnamtran.com}"
+          echo "Smoke-testing $site"
+
+          code="$(curl -sS -o /tmp/index.html -w '%{http_code}' --max-time 20 "$site/")"
+          test "$code" = "200" || { echo "::error::frontend returned $code"; exit 1; }
+          grep -qi 'videoflix' /tmp/index.html || {
+            echo "::error::frontend served 200 but the body does not look like Videoflix"; exit 1; }
+
+          # An unauthenticated caller must be refused, not served. A 200 here
+          # would mean auth is bypassed; a 5xx would mean the API is down.
+          code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$site/api/video/")"
+          test "$code" = "401" || { echo "::error::/api/video/ returned $code, expected 401"; exit 1; }
+
+          echo "::notice title=Smoke test passed::frontend 200, API correctly refuses anonymous callers"
